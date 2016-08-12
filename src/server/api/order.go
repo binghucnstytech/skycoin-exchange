@@ -5,50 +5,57 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gin-gonic/gin"
 	"github.com/skycoin/skycoin-exchange/src/pp"
 	"github.com/skycoin/skycoin-exchange/src/server/engine"
+	"github.com/skycoin/skycoin-exchange/src/server/net"
 	"github.com/skycoin/skycoin-exchange/src/server/order"
 	"github.com/skycoin/skycoin-exchange/src/server/wallet"
 	"github.com/skycoin/skycoin/src/cipher"
 )
 
-func CreateOrder(egn engine.Exchange) gin.HandlerFunc {
-	return func(c *gin.Context) {
+func CreateOrder(egn engine.Exchange) net.HandlerFunc {
+	return func(c *net.Context) {
 		rlt := &pp.EmptyRes{}
 		req := &pp.OrderReq{}
 		for {
-			tp, err := order.TypeFromStr(c.Param("type"))
-			if err != nil {
-				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongRequest)
-				break
-			}
-
 			if err := getRequest(c, req); err != nil {
 				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongRequest)
+				logger.Error("%s", err.Error())
 				break
 			}
 			aid := req.GetAccountId()
+			tp, err := order.TypeFromStr(req.GetType())
+			if err != nil {
+				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongRequest)
+				logger.Error("%s", err.Error())
+				break
+			}
+
 			// find the account
 			if _, err := cipher.PubKeyFromHex(aid); err != nil {
 				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongAccountId)
+				logger.Error("%s", err.Error())
 				break
 			}
 
 			acnt, err := egn.GetAccount(aid)
 			if err != nil {
 				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongAccountId)
+				logger.Error("%s", err.Error())
 				break
 			}
 
 			ct, bal, err := needBalance(tp, req)
 			if err != nil {
 				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongRequest)
+				logger.Error("%s", err.Error())
 				break
 			}
 
 			if acnt.GetBalance(ct) < bal {
-				rlt = pp.MakeErrRes(fmt.Errorf("%s balance is not sufficient", ct))
+				err := fmt.Errorf("%s balance is not sufficient", ct)
+				rlt = pp.MakeErrRes(err)
+				logger.Debug("%s", err.Error())
 				break
 			}
 
@@ -65,6 +72,7 @@ func CreateOrder(egn engine.Exchange) gin.HandlerFunc {
 				logger.Info("account:%s decrease %s:%d", acnt.GetID(), ct, bal)
 				if err := acnt.DecreaseBalance(ct, bal); err != nil {
 					rlt = pp.MakeErrRes(err)
+					logger.Error("%s", err.Error())
 					break
 				}
 			}
@@ -86,41 +94,41 @@ func CreateOrder(egn engine.Exchange) gin.HandlerFunc {
 			reply(c, res)
 			return
 		}
-		c.JSON(200, *rlt)
+		c.JSON(rlt)
 	}
 }
 
-func GetOrders(egn engine.Exchange) gin.HandlerFunc {
-	return func(c *gin.Context) {
+func GetOrders(egn engine.Exchange) net.HandlerFunc {
+	return func(c *net.Context) {
 		rlt := &pp.EmptyRes{}
 		for {
-			tp, err := order.TypeFromStr(c.Param("type"))
+			req := pp.GetOrderReq{}
+			if err := getRequest(c, &req); err != nil {
+				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongRequest)
+				break
+			}
+			tp, err := order.TypeFromStr(req.GetType())
 			if err != nil {
 				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongRequest)
+				logger.Error("%s", err)
 				break
 			}
-
-			req := pp.GetOrderReq{}
-			if err := c.BindJSON(&req); err != nil {
-				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongRequest)
-				break
-			}
-
 			ords, err := egn.GetOrders(req.GetCoinPair(), tp, req.GetStart(), req.GetEnd())
 			if err != nil {
 				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongRequest)
+				logger.Error("%s", err)
 				break
 			}
 			res := pp.GetOrderRes{
 				CoinPair: req.CoinPair,
-				Type:     pp.PtrString(tp.String()),
+				Type:     req.Type,
 				Orders:   make([]*pp.Order, len(ords)),
 			}
 
 			for i := range ords {
 				res.Orders[i] = &pp.Order{
 					Id:        &ords[i].ID,
-					Type:      pp.PtrString(tp.String()),
+					Type:      req.Type,
 					Price:     &ords[i].Price,
 					Amount:    &ords[i].Amount,
 					RestAmt:   &ords[i].RestAmt,
@@ -129,11 +137,10 @@ func GetOrders(egn engine.Exchange) gin.HandlerFunc {
 			}
 
 			res.Result = pp.MakeResultWithCode(pp.ErrCode_Success)
-			c.JSON(200, res)
+			reply(c, &res)
 			return
 		}
-
-		c.JSON(200, rlt)
+		c.JSON(rlt)
 	}
 }
 

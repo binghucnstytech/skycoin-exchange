@@ -1,11 +1,11 @@
 package rpclient
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 
@@ -25,19 +25,14 @@ func CreateAccount(cli Client) http.HandlerFunc {
 			}
 
 			req, _ := pp.MakeEncryptReq(&r, cli.GetServPubkey().Hex(), s.Hex())
-			d, _ := json.Marshal(req)
-
-			// send req to server.
-			url := fmt.Sprintf("%s/accounts", cli.GetServApiRoot())
-			resp, err := http.Post(url, "application/json", bytes.NewBuffer(d))
+			rsp, err := sendRequest("/auth/create/account", req)
 			if err != nil {
 				errRlt = pp.MakeErrResWithCode(pp.ErrCode_ServerError)
 				break
 			}
 
 			res := pp.EncryptRes{}
-			json.NewDecoder(resp.Body).Decode(&res)
-			defer resp.Body.Close()
+			json.NewDecoder(rsp.Body).Decode(&res)
 
 			// handle the response
 			if res.Result.GetSuccess() {
@@ -87,19 +82,15 @@ func GetNewAddress(cli Client) http.HandlerFunc {
 			}
 
 			req, _ := pp.MakeEncryptReq(&r, cli.GetServPubkey().Hex(), key)
-			reqjson, _ := json.Marshal(req)
-
-			// send req to server.
-			url := fmt.Sprintf("%s/deposit_address", cli.GetServApiRoot())
-			resp, err := http.Post(url, "application/json", bytes.NewBuffer(reqjson))
+			resp, err := sendRequest("/auth/create/deposit_address", req)
 			if err != nil {
 				log.Println(err)
 				errRlt = pp.MakeErrResWithCode(pp.ErrCode_ServerError)
 				break
 			}
+
 			res := pp.EncryptRes{}
 			json.NewDecoder(resp.Body).Decode(&res)
-			defer resp.Body.Close()
 
 			// handle the response
 			if res.Result.GetSuccess() {
@@ -137,10 +128,7 @@ func GetBalance(cli Client) http.HandlerFunc {
 			}
 
 			req, _ := pp.MakeEncryptReq(&gbr, cli.GetServPubkey().Hex(), key)
-			js, _ := json.Marshal(req)
-
-			url := fmt.Sprintf("%s/account/balance", cli.GetServApiRoot())
-			resp, err := http.Post(url, "application/json", bytes.NewBuffer(js))
+			resp, err := sendRequest("/auth/get/balance", req)
 			if err != nil {
 				errRlt = pp.MakeErrResWithCode(pp.ErrCode_ServerError)
 				break
@@ -148,7 +136,6 @@ func GetBalance(cli Client) http.HandlerFunc {
 
 			res := pp.EncryptRes{}
 			json.NewDecoder(resp.Body).Decode(&res)
-			defer resp.Body.Close()
 
 			// handle the response
 			if res.Result.GetSuccess() {
@@ -206,16 +193,13 @@ func Withdraw(cli Client) http.HandlerFunc {
 			}
 
 			req, _ := pp.MakeEncryptReq(&wr, cli.GetServPubkey().Hex(), key)
-			js, _ := json.Marshal(req)
-			url := fmt.Sprintf("%s/account/withdrawal", cli.GetServApiRoot())
-			resp, err := http.Post(url, "application/json", bytes.NewBuffer(js))
+			resp, err := sendRequest("/auth/withdrawl", req)
 			if err != nil {
 				rlt = pp.MakeErrResWithCode(pp.ErrCode_ServerError)
 				break
 			}
 			res := pp.EncryptRes{}
 			json.NewDecoder(resp.Body).Decode(&res)
-			defer resp.Body.Close()
 
 			// handle the response
 			if res.Result.GetSuccess() {
@@ -232,15 +216,7 @@ func Withdraw(cli Client) http.HandlerFunc {
 	}
 }
 
-func CreateBidOrder(cli Client) http.HandlerFunc {
-	return createOrder(cli, "bid")
-}
-
-func CreateAskOrder(cli Client) http.HandlerFunc {
-	return createOrder(cli, "ask")
-}
-
-func createOrder(cli Client, tp string) http.HandlerFunc {
+func CreateOrder(cli Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rlt := &pp.EmptyRes{}
 		for {
@@ -257,16 +233,13 @@ func createOrder(cli Client, tp string) http.HandlerFunc {
 
 			rawReq.AccountId = &id
 			req, _ := pp.MakeEncryptReq(&rawReq, cli.GetServPubkey().Hex(), key)
-			js, _ := json.Marshal(req)
-			url := fmt.Sprintf("%s/account/order/%s", cli.GetServApiRoot(), tp)
-			resp, err := http.Post(url, "application/json", bytes.NewBuffer(js))
+			resp, err := sendRequest(fmt.Sprintf("/auth/create/order"), req)
 			if err != nil {
 				rlt = pp.MakeErrResWithCode(pp.ErrCode_ServerError)
 				break
 			}
 			res := pp.EncryptRes{}
 			json.NewDecoder(resp.Body).Decode(&res)
-			defer resp.Body.Close()
 
 			// handle the response
 			if res.Result.GetSuccess() {
@@ -295,6 +268,11 @@ func getOrders(cli Client, tp string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rlt := &pp.EmptyRes{}
 		for {
+			_, key, err := getAccountAndKey(r)
+			if err != nil {
+				rlt = pp.MakeErrRes(err)
+				break
+			}
 			cp := r.URL.Query().Get("coin_pair")
 			st := r.URL.Query().Get("start")
 			ed := r.URL.Query().Get("end")
@@ -315,26 +293,36 @@ func getOrders(cli Client, tp string) http.HandlerFunc {
 				break
 			}
 
-			req := pp.GetOrderReq{
+			getOrderReq := pp.GetOrderReq{
 				CoinPair: &cp,
+				Type:     pp.PtrString(tp),
 				Start:    &start,
 				End:      &end,
 			}
-			jsn, _ := json.Marshal(req)
-			url := fmt.Sprintf("%s/orders/%s", cli.GetServApiRoot(), tp)
-			resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsn))
+
+			req, err := pp.MakeEncryptReq(&getOrderReq, cli.GetServPubkey().Hex(), key)
+			if err != nil {
+				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongRequest)
+				break
+			}
+			resp, err := sendRequest("/auth/get/orders", req)
 			if err != nil {
 				rlt = pp.MakeErrResWithCode(pp.ErrCode_ServerError)
 				break
 			}
-			res := pp.GetOrderRes{}
-			defer resp.Body.Close()
-			if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-				rlt = pp.MakeErrResWithCode(pp.ErrCode_ServerError)
-				break
+			res := pp.EncryptRes{}
+			json.NewDecoder(resp.Body).Decode(&res)
+
+			// handle the response
+			if res.Result.GetSuccess() {
+				v := pp.CoinsRes{}
+				pp.DecryptRes(res, cli.GetServPubkey().Hex(), key, &v)
+				SendJSON(w, &v)
+				return
+			} else {
+				SendJSON(w, &res)
+				return
 			}
-			SendJSON(w, &res)
-			return
 		}
 		SendJSON(w, rlt)
 	}
@@ -344,20 +332,41 @@ func GetCoins(cli Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rlt := &pp.EmptyRes{}
 		for {
-			url := fmt.Sprintf("%s/coins", cli.GetServApiRoot())
-			resp, err := http.Get(url)
+			id, key, err := getAccountAndKey(r)
 			if err != nil {
+				rlt = pp.MakeErrRes(err)
+				break
+			}
+			rq := pp.GetCoinsReq{
+				AccountId: pp.PtrString(id),
+			}
+
+			req, err := pp.MakeEncryptReq(&rq, cli.GetServPubkey().Hex(), key)
+			if err != nil {
+				rlt = pp.MakeErrResWithCode(pp.ErrCode_WrongRequest)
+				break
+			}
+
+			rsp, err := sendRequest("/auth/get/coins", req)
+			if err != nil {
+				log.Println(err)
 				rlt = pp.MakeErrResWithCode(pp.ErrCode_ServerError)
 				break
 			}
-			defer resp.Body.Close()
-			res := pp.CoinsRes{}
-			if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-				rlt = pp.MakeErrResWithCode(pp.ErrCode_ServerError)
-				break
+
+			res := pp.EncryptRes{}
+			json.NewDecoder(rsp.Body).Decode(&res)
+
+			// handle the response
+			if res.Result.GetSuccess() {
+				v := pp.CoinsRes{}
+				pp.DecryptRes(res, cli.GetServPubkey().Hex(), key, &v)
+				SendJSON(w, &v)
+				return
+			} else {
+				SendJSON(w, &res)
+				return
 			}
-			SendJSON(w, &res)
-			return
 		}
 		SendJSON(w, rlt)
 	}
@@ -400,4 +409,18 @@ func SendJSON(w http.ResponseWriter, msg interface{}) {
 
 func BindJSON(r *http.Request, v interface{}) error {
 	return json.NewDecoder(r.Body).Decode(v)
+}
+
+func sendRequest(path string, data interface{}) (*Response, error) {
+	c, err := net.Dial("tcp", "localhost:8080")
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+
+	r, err := MakeRequest(path, data)
+	if err != nil {
+		return nil, err
+	}
+	return r.WriteRsp(c)
 }
